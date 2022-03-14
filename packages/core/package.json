@@ -1,0 +1,21 @@
+{
+  "name": "@nojank/core",
+  "version": "1.0.1",
+  "description": "Detect and stop jank in your node and browser apps!",
+  "main": "dist/index.js",
+  "browser": "dist/index.modern.js",
+  "unpkg": "./dist/index.umd.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "source": "src/index.ts",
+  "license": "MIT",
+  "scripts": {
+    "build": "microbundle"
+  },
+  "devDependencies": {
+    "@types/jest": "^27.4.1",
+    "jest": "^27.5.1",
+    "microbundle": "^0.14.2",
+    "ts-jest": "^27.1.3"
+  }
+}
