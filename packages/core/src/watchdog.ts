@@ -1,4 +1,4 @@
-import { onConfig, WARN_VARIANCE, _config } from './config'
+import { onConfig, WARN_VARIANCE, _globalConfig } from './config'
 import { event } from './event'
 
 /**
@@ -9,7 +9,7 @@ export const { stop, start, pause } = (() => {
   let isRunning = false
   let tid: ReturnType<typeof setTimeout>
   const watchdog = () => {
-    const { warnMs } = _config
+    const { warnMs } = _globalConfig
     isRunning = true
     const start = Date.now()
     const limit = start + warnMs + WARN_VARIANCE
@@ -62,7 +62,7 @@ const [onJank, fireJank, clearOnJank] = event<OnJankPayload>(
 )
 
 export const watchdog = (block: () => any, watchId: string, ms?: number) => {
-  const { warnMs } = _config
+  const { warnMs } = _globalConfig
   const _start = Date.now()
   const _ms = ms || warnMs
   const _limit = _start + _ms + WARN_VARIANCE

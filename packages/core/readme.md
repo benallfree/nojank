@@ -2,25 +2,27 @@ nojank is the zero-dependency tool to help detect and replace janky code with co
 
 nojank warns you if your node or browser thread is blocking for too long without returning control to the event loop.
 
-> Jank refers to sluggishness in a user interface, usually caused by executing long tasks on the main thread, blocking rendering, or expending too much processor power on background processes.
-
 <!-- TOC -->
 
 - [Installation](#installation)
 - [Quickstart](#quickstart)
 - [Fixing jank](#fixing-jank)
-  - [Use nojank's forEach/map/reduce](#use-nojanks-foreachmapreduce)
-  - [Use push to work directly with the nojank job queue](#use-push-to-work-directly-with-the-nojank-job-queue)
+  - [Use nojank's forEach/map/reduce/sort](#use-nojanks-foreachmapreducesort)
   - [Use config to fine-tune nojank's sensitivity](#use-config-to-fine-tune-nojanks-sensitivity)
   - [Use onJank to listen for jank events](#use-onjank-to-listen-for-jank-events)
   - [Use stop for server-side code](#use-stop-for-server-side-code)
-- [Advanced usage, antipatterns, and examples](#advanced-usage-antipatterns-and-examples)
-  - [Antipattern: Promise flooding with push](#antipattern-promise-flooding-with-push)
-  - [Antipattern: Promise chaining with push](#antipattern-promise-chaining-with-push)
-  - [Use Generators with push to process big data](#use-generators-with-push-to-process-big-data)
-  - [Use named swimlanes to manage multiple concurrent task queues](#use-named-swimlanes-to-manage-multiple-concurrent-task-queues)
+- [Advanced usage: the run command](#advanced-usage-the-run-command)
+  - [Antipattern: overuse of run](#antipattern-overuse-of-run)
+  - [Antipattern: Promise flooding](#antipattern-promise-flooding)
+  - [Antipattern: Promise chaining](#antipattern-promise-chaining)
+  - [Using Generators to process big data](#using-generators-to-process-big-data)
+  - [Use execution context to optimize your big data jobs](#use-execution-context-to-optimize-your-big-data-jobs)
+  - [Use named swimlanes to manage multiple concurrent job queues](#use-named-swimlanes-to-manage-multiple-concurrent-job-queues)
   - [Use the swimlane priority option to create swimlanes in different pools.](#use-the-swimlane-priority-option-to-create-swimlanes-in-different-pools)
+  - [Recursion](#recursion)
 - [Alternatives and other tools](#alternatives-and-other-tools)
+- [Ideas already considered](#ideas-already-considered)
+  - [Balance the time given to swimlanes in the same pool.](#balance-the-time-given-to-swimlanes-in-the-same-pool)
 
 <!-- /TOC -->
 
@@ -62,26 +64,32 @@ const results = BIG_ARRAY.map((item) => doSomethingExpensive(item))
 gets wrapped and becomes
 
 ```js
-import { watchdog, onJank } from 'nojank'
+import { watchdog } from 'nojank'
 
 const results = watchdog(() => {
   return BIG_ARRAY.map((item) => doSomethingExpensive(item))
 }, `BIG_ARRAY`)
-
-onJank(({ ms, watchId }) => {
-  console.warn(`Got a watchdog event for ${watchId}`)
-})
 ```
 
 That's it! When these warnings make you angry enough, read on to learn how to fix jank.
 
 # Fixing jank
 
-## Use nojank's `forEach/map/reduce`
+Jank refers to sluggishness, lack of responsiveness, or extended unresponsiveness in a thread that is supposed to remain responsive for realtime events.
+
+In the browser, jank means the user interface would be unresponsive until the loop finished. The user might not even be able to close the browser tab. On the server, jank means the server would not accept incoming web requests or be able to perform other I/O operations such as socket communication, logging, or file I/O.
+
+Jank can cause a poor realtime experience by pausing unexpectedly while a client is waiting for a response in realtime. It is caused by executing long synchronous tasks on a realtime thread. While the synchronous task is running, control cannot return to the event loop.
+
+nojank encourages you to convert expensive synchronous operations into a series of inexpensive asynchronous operations in order to reduce or eliminate jank altogether.
+
+The essence of jank management boils down to cooperative multitasking. nojank helps you favor deferred execution of expensive synchronous until there is more idle time to accomplish them.
+
+## Use nojank's `forEach/map/reduce/sort`
 
 When you find janky code, it is almost always a long-running synchronous loop. nojank come batteries included to help with that.
 
-Consider replacing synchronous loops (`do/while/map/reduce/for/forEach`) with nojank's asynchronous alternatives. There is no overhead or performance penalty. These efficient implementations will execute at the same speed as your original code, except they will share the time with other things running in the same thread.
+Consider replacing synchronous loops (`do/while/map/reduce/for/forEach/sort`) with nojank's cooperative asynchronous alternatives. There is negligible overhead to doing so. These efficient implementations will execute at the same speed as your original code, except they will share the time with other things running in the same thread.
 
 An expensive synchronous `Array.map` like this can cause jank:
 
@@ -116,38 +124,13 @@ const results = await reduce(
 )
 ```
 
-## Use `push` to work directly with the nojank job queue
-
-nojank helps you break tasks into smaller jobs in order to reduce or eliminate jank altogether. The essence of jank management boils down to cooperative multitasking where you define a callback that knows how to nibble on a bit of work and finish quickly.
-
-nojank offers a lightweight and efficient task queue to help avoid jank. Long series of synchronous operations can be broken into bite-sized chunks that do a small piece of work and exit quickly. It takes a little thought to organize your code this way, but the benefits are a smooth user experience and I/O experience.
-
-nojank's `push` method accepts a task function and returns a Promise that resolves when that task is completed. Internally, the task is executed cooperatively along with other tasks while taking breaks to prevent jank.
+And a `sort` method:
 
 ```js
-import { push } from 'nojank'
+import { sort } from 'nojank'
 
-push(() => myExpensiveHashingFunc('foo'))
-  .then((result) => {
-    console.log(result)
-  })
-  .catch((e) => {
-    console.error(e)
-  })
+sort(MY_HUGE_ARRAY, myExpensiveComparisonFunc)
 ```
-
-Or using async/await:
-
-```js
-try {
-  const result = await push(() => myExpensiveHashingFunc('foo'))
-  console.log(result)
-} catch (e) {
-  console.error(e)
-}
-```
-
-Normally the higher order looping primitives `map/reduce/forEach` will be sufficient. But for times when they are not, `push` is available too. Jobs added using `push` are executed FIFO.
 
 ## Use `config` to fine-tune nojank's sensitivity
 
@@ -161,6 +144,8 @@ config({
   warnMs: 50,
 })
 ```
+
+nojank stays out of the way by using idle time to execute jobs. If it detects that the thread is busy with other work, nojank will reduce its processing time to compensate.
 
 | Name    | Default | Description                                                                                                                                                                                  |
 | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -197,9 +182,50 @@ import { stop } from 'nojank'
 stop() // Give nojank a chance to clean up and exit
 ```
 
-# Advanced usage, antipatterns, and examples
+# Advanced usage: the `run` command
 
-## Antipattern: Promise flooding with `push`
+nojank provides a `run` primitive to give you full control over the cooperative multitasking environment.
+
+`run` is how jobs are enqueued. nojank's high level `map/reduce/forEach/sort` helpers are built upon the `run` primitive.
+
+`run` accepts a job function and returns a Promise that resolves when that job is completed. Internally, the job is executed cooperatively along with other jobs while taking breaks to prevent jank.
+
+```js
+import { run } from 'nojank'
+
+run(() => myExpensiveHashingFunc('foo'))
+  .then((result) => {
+    console.log(result)
+  })
+  .catch((e) => {
+    console.error(e)
+  })
+```
+
+Or using async/await:
+
+```js
+try {
+  const result = await run(() => myExpensiveHashingFunc('foo'))
+  console.log(result)
+} catch (e) {
+  console.error(e)
+}
+```
+
+Jobs added using `run` are executed FIFO. Before using `run` directly, consider these alternatives:
+
+- Use nojank's higher order looping primitives `map/reduce/forEach/sort`. They are highly optimized and cover most use cases where you need to iterate through items.
+- Create a helper of your own, powered by `run`.
+- Rather than calling `run` a bunch of times, re-architect long series of synchronous operations into bite-sized chunks by passing a Generator function to `run`. It takes a little thought to organize your code this way, but the benefits are a smooth user experience and I/O experience without creating thousands or even millions of nojank jobs. See below for a detailed explanation.
+
+## Antipattern: overuse of `run`
+
+While it is tempting and even initially helpful to just wrap expensive things in `run`, over time this approach becomes an antipattern.
+
+Consider replacing excessive calls to `run` with higher level helpers of your own that use a Generator instead. See below for more details on using Generators and why they are better.
+
+## Antipattern: Promise flooding
 
 Suppose we have an array of 1 million strings and want to calculate hashes for each element. This can be solved easily using a conventional synchronous loop, but it will jank:
 
@@ -214,8 +240,6 @@ const MY_MASSIVE_INPUT_ARRAY = [
 const hashes = MY_MASSIVE_INPUT_ARRAY.map(myExpensiveHashingFunc)
 ```
 
-In the browser, jank means the user interface would be unresponsive until the loop finished. The user might not even be able to close the browser tab. On the server, jank means the server would not accept incoming web requests or be able to perform other I/O operations such as socket communication, logging, or file I/O.
-
 Your first thought might be to move the code into a WebWorker or separate server-side process, but each of those takes a lot of thought and management.
 
 Your second thought might be some version of `Promise.all`:
@@ -223,7 +247,7 @@ Your second thought might be some version of `Promise.all`:
 ```js
 const hashes = await Promise.all(
   MY_MASSIVE_INPUT_ARRAY.map((input) =>
-    push(() => myExpensiveHashingFunc(input))
+    run(() => myExpensiveHashingFunc(input))
   )
 )
 ```
@@ -232,7 +256,7 @@ But oops, you just synchronously iterated over 1 million elements (_jank_) creat
 
 nojank provides better `map/reduce/forEach` primitives already, but it's good to be aware of this antipattern when you are rolling your own enqueuing logic. We discuss using Generators below as the correct alternative.
 
-## Antipattern: Promise chaining with `push`
+## Antipattern: Promise chaining
 
 Maybe you already recognize that you can avoid the promise flooding antipattern by using `Array.reduce` to create a [promise chain](https://css-tricks.com/why-using-reduce-to-sequentially-resolve-promises-works/). Those are cool, no doubt.
 
@@ -240,7 +264,7 @@ Maybe you already recognize that you can avoid the promise flooding antipattern 
 const hashes = await MY_MASSIVE_INPUT_ARRAY.reduce(
   (carry, input) =>
     carry.then((hashes) =>
-      push(() => myExpensiveHashingFunc(input)).then((hash) => {
+      run(() => myExpensiveHashingFunc(input)).then((hash) => {
         hashes.push(hash)
         return hashes
       })
@@ -251,18 +275,18 @@ const hashes = await MY_MASSIVE_INPUT_ARRAY.reduce(
 
 This is way better because it iterates over the elements in a cooperative way and only creates one nojank job at a time.
 
-But it's still not _great_ because it still does the work of calling `push` a million times and promise resolving a million nojank jobs -- just not all at once (which again is better). Enqueuing jobs and resolving promises does create overhead though.
+But it's still not _great_ because it still does the work of calling `run` a million times and promise resolving a million nojank jobs -- just not all at once (which again is better). Enqueuing jobs and resolving promises does create overhead though.
 
 It's good to be aware of this antipattern too because nojank supports Generators which are much more efficient.
 
-## Use Generators with `push` to process big data
+## Using Generators to process big data
 
 [Generators](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Iterators_and_Generators#generator_functions) have first-class support in nojank.
 
-Instead of calling `push` for each element in a big data set, nojank's `push` command can accept a Generator function. Generators are [wicked fast](https://glebbahmutov.com/blog/performance-of-v8-generators-vs-promises/) at chopping up big work.
+Instead of calling `run` for each element in a big data set, pass a Generator to `run`. Generators are [wicked fast](https://glebbahmutov.com/blog/performance-of-v8-generators-vs-promises/) at chopping up big work asynchronously.
 
 ```js
-const hashes = await push(function* () {
+const hashes = await run(function* () {
   // The '*' means it's a generator
   const hashes: string[] = []
   for (let i = 0; i < MY_MASSIVE_INPUT_ARRAY.length; i++) {
@@ -275,13 +299,47 @@ const hashes = await push(function* () {
 })
 ```
 
-The above creates just one nojank task. The task is a Generator function that iterates over `MY_MASSIVE_INPUT_ARRAY`, yielding after each element, before finishing. It is blazing fast, has all the benefits of returning control to nojank so things can breath, and none of the drawbacks of associated with creating an army of promises.
+The above creates just one nojank job. The job is a Generator function that iterates over `MY_MASSIVE_INPUT_ARRAY`, yielding after each element, before finishing. It is blazing fast, has all the benefits of returning control to nojank so things can breath, and none of the drawbacks of associated with creating an army of promises.
 
-nojank uses this exact approach internally to implement its `map/reduce/forEach` looping primitives.
+nojank uses this exact approach internally to implement its `map/reduce/forEach/sort` looping primitives.
 
-This approach is The Way.
+## Use execution context to optimize your big data jobs
 
-## Use named swimlanes to manage multiple concurrent task queues
+You may recognize that nojank can't possibly be as performant as synchronous code because:
+
+1. nojank's job scheduler and context switching adds overhead
+2. pausing/sharing time with other code adds overhead
+
+The more times you `yield` in your function, the more times control is returned to nojank. This _normally_ means your function a good citizen, but at times it may actually be too generous and cause unnecessary context switching. The sweet spot is to use the time allowed as efficiently as possible.
+
+nojank's `run` command tries to help your job run as efficiently as possible by passing execution context with each invocation.
+
+Suppose you want to populate a large array with expensive values. Doing this synchronously could cause jank, but calling `yield` after each iteration might also cause nojank to _thrash_ by unnecessarily switching execution threads more often than is actually useful. **Remember, the objective of nojank is to create an application that is as responsive as it needs to be.** Anything beyond that leads to wasteful context switching.
+
+Enter `run` context!
+
+```js
+run(function* () {
+  let context = yield
+  const myVals = []
+  for (i = 0; i < 100000; i++) {
+    myVals.push(myVeryExpensiveFunc(i))
+    if (context.shouldYield()) {
+      context = yield
+    }
+  }
+})
+```
+
+Every call to `yield` will return a freshened execution context. This allows you to make optimization decisions with more clarity.
+
+| Name          | Type     | Description                                                                                                                                                                                                               |
+| ------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shouldYield` | Function | Returns `true` if it is time to stop or `false` if your job has more time to process without violating nojank's concurrency rules.                                                                                        |
+| `maxMs`       | integer  | The maximum number of milliseconds your job should run before calling `yield`. Consider using `shouldYield()` unless you have a special reason for needing to track your own execution time.                              |
+| `expiry`      | integer  | The Unix timestamp in milliseconds (same format as `Date.now()`) representing the latest date at which you should `yield`. Unless you have a special need to monitor your own timing, it's better to use `shouldYield()`. |
+
+## Use named swimlanes to manage multiple concurrent job queues
 
 Eliminating jank is pretty good, but it can cause another kind of waiting: waiting for nojank's work queue to process a critical item!
 
@@ -295,26 +353,26 @@ But now an important job gets enqueued:
 ```js
 // This humble but critical job is at the back of the line
 // behind a million less important jobs.
-push(() => checkMother() && console.warn(`Your mother needs you!`))
+run(() => checkMother() && console.warn(`Your mother needs you!`))
 ```
 
 nojank solves this issue with **named swimlanes**. Each swimlane gets its own slice of the processing time.
 
-To use named swimlanes, you must provide the lane name as the last parameter of `push`, `map`, `reduce`, or `forEach`.
+To use named swimlanes, you must provide the lane name as the last parameter of `run`, `map`, `reduce`, or `forEach`.
 
 ```js
 map(MY_MASSIVE_ARRAY, myExpensiveHashingFunc, {
   lane: 'calc-hashes',
 })
 
-push(() => checkMother() && console.warn(`Your mother needs you!`), {
+run(() => checkMother() && console.warn(`Your mother needs you!`), {
   lane: 'critical',
 })
 ```
 
 Now nojank's task scheduler will share time between `calc-hashes`, `critical`, and a magic lane named `__default__` which is used when you don't provide a specific lane name.
 
-Internally, nojank's scheduler makes sure all swimlanes get the same time allotment in a round-robin fashion. If a job in one swimlane takes 20ms, it will not be scheduled again until all other swimlanes have received their 20ms of time or are empty. This way, you can add as many jobs to a swimlane, whether expensive or inexpensive, and it will not unfairly hold up jobs in other swimlanes.
+Internally, nojank's visits all swimlanes in a round-robin fashion.
 
 ## Use the swimlane `priority` option to create swimlanes in different pools.
 
@@ -361,12 +419,28 @@ config({
 
 The above will create three swimlanes: `__default__` (always exists), `calc-hashes`, and `critical`. nojank will empty work queues from highest to lowest `priority`. In other words, ALL of the `critical` jobs will be completed, then ALL of the `__default__` jobs, then the `calc-hashes` jobs.
 
-Lanes having the same priority will share time as described above.
+Lanes having the same priority will share time in a round-robin fashion as described above.
 
-Specifying a `priority` parameter when enqueuing a job will produce a warning and has no effect. Priorities cannot be defined or changed by pushing jobs.
+Specifying a `priority` parameter when enqueuing a job will produce a warning and has no effect. Priorities cannot be defined or changed by running jobs.
+
+## Recursion
+
+nojank allows recursive calls to `run`. When `run` is called in a given swimlane while it is already executing a job in that same swimlane, a swimlane job stack is created. `run` will execute all jobs in the top-most stack before returning execution to previous stacks.
+
+Recursion also works across priority pools. If a higher priority job calls a lower priority job, that lower priority job will execute in a new stack.
 
 # Alternatives and other tools
 
 Cooperative multitasking means breaking jobs into smaller pieces and executing them bit by bit until everything is finished.
 
 There are some interesting packages already out there. For example, you can use [cooperative](https://www.npmjs.com/package/cooperative) to move all kinds of iteration into async versions. Internally, it uses `setImmediate` and breaks tasks up for you.
+
+# Ideas already considered
+
+## Balance the time given to swimlanes in the same pool.
+
+The idea here is that if one swimlane is a bad actor or otherwise hogging the execution slice time, the scheduler will know and skip it in future rounds until the other swimlanes in the same pool have received their share of the time.
+
+This proves quite difficult to do in a way that won't create further unintended side-effects. Handling empty swimlanes, swimlanes that receive new tasks, adding/removing swimlanes, and swimlanes with variable-length jobs from various sources becomes impossible to generalize.
+
+**Instead, the recommendation is to further stratify swimlanes by creating more and using different priorities.**
