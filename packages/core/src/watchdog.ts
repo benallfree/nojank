@@ -61,7 +61,11 @@ const [onJank, fireJank, clearOnJank] = event<OnJankPayload>(
     )
 )
 
-export const watchdog = (block: () => any, watchId: string, ms?: number) => {
+export const watchdog = <T>(
+  block: () => T,
+  watchId: string,
+  ms?: number
+): T => {
   const { warnMs } = _globalConfig
   const _start = Date.now()
   const _ms = ms || warnMs

@@ -8,7 +8,7 @@ export const reduceArray = <I, O>(
   return run(function* () {
     let _carry: O = initial
     for (let i = 0; i < arr.length; i++) {
-      _carry = cb(_carry, arr[i], i)
+      _carry = cb(_carry, arr[i]!, i)
       yield
     }
     return _carry

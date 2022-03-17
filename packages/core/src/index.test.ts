@@ -20,13 +20,6 @@ const jankThenReturnControlToEventLoop = (ms = 200) => {
   })
 }
 
-const doSomethingJanky = (cb: () => any) => {
-  return new Promise<any>((resolve) => {
-    setImmediate(() => resolve(res))
-    const res = cb()
-  })
-}
-
 const mkCounter = () => {
   let i = 0
   return jest.fn(() => i++)
@@ -84,7 +77,7 @@ test('run', async () => {
     err()
   }
   expect(count.mock.calls.length).toBe(1)
-  expect(count.mock.results[0].value).toBe(0)
+  expect(count.mock.results[0]?.value).toBe(0)
   expect(err.mock.calls.length).toBe(0)
 
   /**
@@ -98,7 +91,7 @@ test('run', async () => {
     err()
   }
   expect(count.mock.calls.length).toBe(1)
-  expect(count.mock.results[0].value).toBe(0)
+  expect(count.mock.results[0]?.value).toBe(0)
   expect(err.mock.calls.length).toBe(1)
 
   /**
@@ -106,7 +99,7 @@ test('run', async () => {
    */
   const res = await Promise.all([run(() => 1), run(() => 2), run(() => 3)])
   expect(count.mock.calls.length).toBe(1)
-  expect(count.mock.results[0].value).toBe(0)
+  expect(count.mock.results[0]?.value).toBe(0)
   expect(err.mock.calls.length).toBe(1)
   expect(res).toStrictEqual([1, 2, 3])
 })
@@ -144,10 +137,10 @@ test('The warning message differentiates between jank inside its processing queu
   expect(counter).toBeCalledTimes(0)
   await jankThenReturnControlToEventLoop()
   expect(counter).toBeCalledTimes(1)
-  expect(counter.mock.calls[0][0]).toMatchObject({ watchId: 'unknown' })
+  expect(counter.mock.calls[0]?.[0]).toMatchObject({ watchId: 'unknown' })
   await run(jankForMs)
   expect(counter).toBeCalledTimes(2)
-  expect(counter.mock.calls[1][0]).toMatchObject({ watchId: 'slice20' })
+  expect(counter.mock.calls[1]?.[0]).toMatchObject({ watchId: 'slice20' })
 })
 
 test('swimlanes', async () => {

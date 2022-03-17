@@ -12,16 +12,20 @@ nojank warns you if your node or browser thread is blocking for too long without
   - [Use onJank to listen for jank events](#use-onjank-to-listen-for-jank-events)
   - [Use stop for server-side code](#use-stop-for-server-side-code)
 - [Advanced usage: the run command](#advanced-usage-the-run-command)
-  - [Antipattern: overuse of run](#antipattern-overuse-of-run)
-  - [Antipattern: Promise flooding](#antipattern-promise-flooding)
-  - [Antipattern: Promise chaining](#antipattern-promise-chaining)
-  - [Using Generators to process big data](#using-generators-to-process-big-data)
+  - [Use Generators to process big data](#use-generators-to-process-big-data)
   - [Use execution context to optimize your big data jobs](#use-execution-context-to-optimize-your-big-data-jobs)
   - [Use named swimlanes to manage multiple concurrent job queues](#use-named-swimlanes-to-manage-multiple-concurrent-job-queues)
   - [Use the swimlane priority option to create swimlanes in different pools.](#use-the-swimlane-priority-option-to-create-swimlanes-in-different-pools)
-  - [Recursion](#recursion)
+- [Antipatterns](#antipatterns)
+  - [Antipattern: overuse of run](#antipattern-overuse-of-run)
+  - [Antipattern: asynchronous jobs](#antipattern-asynchronous-jobs)
+  - [Antipattern: resolving promises inside jobs](#antipattern-resolving-promises-inside-jobs)
+  - [Antipattern: Excessive job queuing](#antipattern-excessive-job-queuing)
+  - [Antipattern: Promise chaining](#antipattern-promise-chaining)
+  - [Antipattern: calling run recursively](#antipattern-calling-run-recursively)
 - [Alternatives and other tools](#alternatives-and-other-tools)
 - [Ideas already considered](#ideas-already-considered)
+  - [Recursive run](#recursive-run)
   - [Balance the time given to swimlanes in the same pool.](#balance-the-time-given-to-swimlanes-in-the-same-pool)
 
 <!-- /TOC -->
@@ -38,7 +42,10 @@ npm i nojank
 
 # Quickstart
 
-Start the jank watchdog as early as possible.
+Start the jank watchdog as early as possible. The jank watchdog reports two metrics:
+
+- Longest jank
+- Any jank exceeding a millisecond threshold (default 150).
 
 ```js
 import { start } from 'nojank'
@@ -50,7 +57,14 @@ if (process.env.NODE_ENV === 'development') start()
 Now you'll see `console.warn` messages like:
 
 ```
-***WARNING JANK 642ms DETECTED, CHECK YOUR SYNCHRONOUS CODE NOW
+***LONGEST THREAD BLOCK IS NOW 25ms.
+***LONGEST THREAD BLOCK IS NOW 37ms.
+***LONGEST THREAD BLOCK IS NOW 120ms.
+***JANK WARNING 120ms. CHECK YOUR SYNCHRONOUS CODE NOW
+***LONGEST THREAD BLOCK IS NOW 272ms.
+***JANK WARNING 272ms. CHECK YOUR SYNCHRONOUS CODE NOW
+***LONGEST THREAD BLOCK IS NOW 642ms.
+***JANK WARNING 642ms. CHECK YOUR SYNCHRONOUS CODE NOW
 ```
 
 Use nojank's `watchdog` method to wrap code you suspect of causing jank. Give each watchdog a custom identifier and it will be passed to `onJank` if it janks.
@@ -77,9 +91,9 @@ That's it! When these warnings make you angry enough, read on to learn how to fi
 
 Jank refers to sluggishness, lack of responsiveness, or extended unresponsiveness in a thread that is supposed to remain responsive for realtime events.
 
-In the browser, jank means the user interface would be unresponsive until the loop finished. The user might not even be able to close the browser tab. On the server, jank means the server would not accept incoming web requests or be able to perform other I/O operations such as socket communication, logging, or file I/O.
+In the browser, jank means the user interface would become unresponsive. The user might not even be able to close the browser tab. On the server, jank means the server would not accept incoming web requests or be able to perform other I/O operations such as socket communication, logging, or file I/O.
 
-Jank can cause a poor realtime experience by pausing unexpectedly while a client is waiting for a response in realtime. It is caused by executing long synchronous tasks on a realtime thread. While the synchronous task is running, control cannot return to the event loop.
+Jank can cause a poor realtime experience by pausing unexpectedly while a user is waiting for a response in realtime. It is caused by executing long synchronous tasks on a realtime thread. While the synchronous task is running, control cannot return to the JavaScript event loop ([MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/EventLoop#event_loop) and [nodejs](https://nodejs.org/en/docs/guides/event-loop-timers-and-nexttick/)).
 
 nojank encourages you to convert expensive synchronous operations into a series of inexpensive asynchronous operations in order to reduce or eliminate jank altogether.
 
@@ -219,67 +233,7 @@ Jobs added using `run` are executed FIFO. Before using `run` directly, consider 
 - Create a helper of your own, powered by `run`.
 - Rather than calling `run` a bunch of times, re-architect long series of synchronous operations into bite-sized chunks by passing a Generator function to `run`. It takes a little thought to organize your code this way, but the benefits are a smooth user experience and I/O experience without creating thousands or even millions of nojank jobs. See below for a detailed explanation.
 
-## Antipattern: overuse of `run`
-
-While it is tempting and even initially helpful to just wrap expensive things in `run`, over time this approach becomes an antipattern.
-
-Consider replacing excessive calls to `run` with higher level helpers of your own that use a Generator instead. See below for more details on using Generators and why they are better.
-
-## Antipattern: Promise flooding
-
-Suppose we have an array of 1 million strings and want to calculate hashes for each element. This can be solved easily using a conventional synchronous loop, but it will jank:
-
-```js
-const MY_MASSIVE_INPUT_ARRAY = [
-  'string1',
-  'string2',
-  // ...and a million more
-]
-
-// This will jank and lock everything up while processing...
-const hashes = MY_MASSIVE_INPUT_ARRAY.map(myExpensiveHashingFunc)
-```
-
-Your first thought might be to move the code into a WebWorker or separate server-side process, but each of those takes a lot of thought and management.
-
-Your second thought might be some version of `Promise.all`:
-
-```js
-const hashes = await Promise.all(
-  MY_MASSIVE_INPUT_ARRAY.map((input) =>
-    run(() => myExpensiveHashingFunc(input))
-  )
-)
-```
-
-But oops, you just synchronously iterated over 1 million elements (_jank_) creating 1 million individual nojank jobs with 1 million pending promises. If it works at all, it will be pretty slow and take a lot of memory.
-
-nojank provides better `map/reduce/forEach` primitives already, but it's good to be aware of this antipattern when you are rolling your own enqueuing logic. We discuss using Generators below as the correct alternative.
-
-## Antipattern: Promise chaining
-
-Maybe you already recognize that you can avoid the promise flooding antipattern by using `Array.reduce` to create a [promise chain](https://css-tricks.com/why-using-reduce-to-sequentially-resolve-promises-works/). Those are cool, no doubt.
-
-```js
-const hashes = await MY_MASSIVE_INPUT_ARRAY.reduce(
-  (carry, input) =>
-    carry.then((hashes) =>
-      run(() => myExpensiveHashingFunc(input)).then((hash) => {
-        hashes.push(hash)
-        return hashes
-      })
-    ),
-  Promise.resolve([])
-)
-```
-
-This is way better because it iterates over the elements in a cooperative way and only creates one nojank job at a time.
-
-But it's still not _great_ because it still does the work of calling `run` a million times and promise resolving a million nojank jobs -- just not all at once (which again is better). Enqueuing jobs and resolving promises does create overhead though.
-
-It's good to be aware of this antipattern too because nojank supports Generators which are much more efficient.
-
-## Using Generators to process big data
+## Use Generators to process big data
 
 [Generators](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Iterators_and_Generators#generator_functions) have first-class support in nojank.
 
@@ -423,11 +377,205 @@ Lanes having the same priority will share time in a round-robin fashion as descr
 
 Specifying a `priority` parameter when enqueuing a job will produce a warning and has no effect. Priorities cannot be defined or changed by running jobs.
 
-## Recursion
+# Antipatterns
 
-nojank allows recursive calls to `run`. When `run` is called in a given swimlane while it is already executing a job in that same swimlane, a swimlane job stack is created. `run` will execute all jobs in the top-most stack before returning execution to previous stacks.
+In creating nojank, we have learned a lot about what _not_ to do. Here are some common antipatterns.
 
-Recursion also works across priority pools. If a higher priority job calls a lower priority job, that lower priority job will execute in a new stack.
+## Antipattern: overuse of `run`
+
+While it is tempting and even initially helpful to just wrap expensive things in `run`, over time this approach becomes an antipattern.
+
+Consider replacing excessive calls to `run` with higher level helpers of your own that use a Generator instead.
+
+## Antipattern: asynchronous jobs
+
+`run` expects jobs to be synchronous. If a job returns a Promise, `run` will throw an Error.
+
+```js
+// Antipattern: throws an Error
+const members = await run(async ()=>{
+  const _members = await fetch('/api/members/')
+  return members.map(m=>{first: member.firstName, last:member.lastName, uuid: calcExpensiveUuid(member)})
+})
+```
+
+```
+Error: Jobs cannot return a Promise
+```
+
+nojank's purpose in life is to make synchronous jobs asynchronous. Since JavaScript already does a great job of managing asynchronous code via Promises and `async/await`, there is never a reason to wrap `run` around something that is already asynchronous. If nojank awaited asynchronous jobs, processing the job queue would slow down tremendously.
+
+To rewrite the above by hand:
+
+```js
+// Better: the asynchronous part has been hoisted out of `run`
+
+const _members = await fetch('/api/members/')
+const members = await run(function* () {
+  const { shouldYield } = yield
+  const res = []
+  for (let i = 0; i < members.length; i++) {
+    const _member = members[i]
+    res.push({
+      first: _member.firstName,
+      last: _member.lastName,
+      uuid: calcExpensiveUuid(_member),
+    })
+    if (shouldYield()) {
+      yield
+    }
+  }
+  return res
+})
+```
+
+But of course, nojank already provides a superior helper for this type of pattern:
+
+```js
+// Best: use nojank's `map` helper instead
+import { map } from 'nojank'
+
+const _members = await fetch('/api/members/')
+const members = await map(_members, (member) => ({
+  first: member.firstName,
+  last: member.lastName,
+  uuid: calcExpensiveUuid(member),
+}))
+```
+
+## Antipattern: resolving promises inside jobs
+
+Promises should not be executed inside jobs. However, just because you can't `return` or `await/then` a Promise inside a job doesn't mean they aren't still useful.
+
+Here's an example that makes good use of Promises inside a job. First, the bad implementation:
+
+```js
+// Bad: creates wasteful Promise flooding
+
+const fetchExtraInfo = (id)=>fetchExtraInfo(`/api/members/${.id}/extraInfo`).catch((e) => {
+        console.error(`Error fetching extra member info for ${.id}`, e)
+        return {} // Empty extraInfo
+      })
+
+const members = await map(members, (member) => {
+  return {
+    // Bad: extraInfo is a promise, which is allowed,
+    // but this executes for every
+    // item - lots of promises are created
+    extraInfo: fetchExtraInfo(member.id),
+  }
+})
+```
+
+A better implementation to avoid Promise flooding is to use a singleton Promise pattern. A singleton Promise makes the Promise the first time and then returns it on subsequent accesses.
+
+```js
+// Better: just-in-time singleton promise
+
+const createSingletonPromiseAccessor = (asyncFuncCaller) => {
+  let _p
+  return ()=>_p || _p = asyncFuncCaller()
+}
+
+const members = await map(members, (member) => {
+  let _p
+  return {
+    extraInfo: createSingletonPromiseAccessor(() => fetchExtraInfo(member.id)),
+  }
+})
+
+// Get some extraInfo. When extraInfo() is called the first,
+// time, the promise is created.
+extraInfo = await members[0].extraInfo()
+```
+
+That is better, but it is still possible to create too many API calls by iterating over too many `members[n].extraInfo()` calls too quickly.
+
+The BEST solution uses a utility like [bottleneck](https://www.npmjs.com/package/bottleneck) to further throttle promise flooding:
+
+```js
+// BEST: just-in-time throttled singleton promise
+
+import Bottleneck from 'bottleneck'
+const limiter = new Bottleneck()
+
+const members = await map(members, (member) => {
+  let _p
+  return {
+    // This version limits how many fetchExtraInfo calls are
+    // live at any given time. There is almost now way to
+    // overrun the system with a strategy like this.
+    extraInfo: createSingletonPromiseAccessor(() =>
+      limiter.schedule(() => fetchExtraInfo(member.id))
+    ),
+  }
+})
+
+// Get some extraInfo
+extraInfo = await members[0].extraInfo()
+```
+
+## Antipattern: Excessive job queuing
+
+Suppose we have an array of 1 million strings and want to calculate hashes for each element. This can be solved easily using a conventional synchronous loop, but it will jank:
+
+```js
+const MY_MASSIVE_INPUT_ARRAY = [
+  'string1',
+  'string2',
+  // ...and a million more
+]
+
+// This will jank and lock everything up while processing...
+const hashes = MY_MASSIVE_INPUT_ARRAY.map(myExpensiveHashingFunc)
+```
+
+Your first thought might be to move the code into a WebWorker or separate server-side process, but each of those takes a lot of thought and management.
+
+Your second thought might be some version of `Promise.all`:
+
+```js
+const hashes = await Promise.all(
+  MY_MASSIVE_INPUT_ARRAY.map((input) =>
+    run(() => myExpensiveHashingFunc(input))
+  )
+)
+```
+
+But oops, you just synchronously iterated over 1 million elements (_jank_) creating 1 million individual nojank jobs with 1 million pending promises. If it works at all, it will be pretty slow and take a lot of memory.
+
+nojank provides better `map/reduce/forEach` primitives already, but it's good to be aware of this antipattern when you are rolling your own enqueuing logic. We discuss using Generators below as the correct alternative.
+
+## Antipattern: Promise chaining
+
+Maybe you already recognize that you can avoid the promise flooding antipattern by using `Array.reduce` to create a [promise chain](https://css-tricks.com/why-using-reduce-to-sequentially-resolve-promises-works/). Those are cool, no doubt.
+
+```js
+const hashes = await MY_MASSIVE_INPUT_ARRAY.reduce(
+  (carry, input) =>
+    carry.then((hashes) =>
+      run(() => myExpensiveHashingFunc(input)).then((hash) => {
+        hashes.push(hash)
+        return hashes
+      })
+    ),
+  Promise.resolve([])
+)
+```
+
+This is way better because it iterates over the elements in a cooperative way and only creates one nojank job at a time.
+
+But it's still not _great_ because it still does the work of calling `run` a million times and promise resolving a million nojank jobs -- just not all at once (which again is better). Enqueuing jobs and resolving promises does create overhead though.
+
+It's good to be aware of this antipattern too because nojank supports Generators which are much more efficient.
+
+## Antipattern: calling `run` recursively
+
+Calling `run` from inside a job is not allowed. Since `run` returns a Promise, it's hard to accidentally call `run` from inside a job because `run` already throws an Error if a job attempts to `await` anything or return a Promise.
+
+If you find yourself wanting to call `run` from inside a job, you probably are looking for a Generator instead.
+
+We leave this note here just to cover the topic.
 
 # Alternatives and other tools
 
@@ -437,6 +585,16 @@ There are some interesting packages already out there. For example, you can use 
 
 # Ideas already considered
 
+## Recursive `run`
+
+This is an interesting idea but it's unclear how it would be implemented. `run` is meant to break up synchronous tasks, but `run` itself is asynchronous.
+
+`run` currently does not await any promises, and it would cause serious queue delays if it did. For now, or until we have a better understanding of how to implement asynchronous jobs, `run` cannot be called recursively.
+
+To allow recursive calls to `run`, nojank would need to create a stacked job queue where it executes all jobs in the top-most stack before returning execution to previous stacks.
+
+Recursion would also need to work across priority pools. If a higher priority job calls a lower priority job, that lower priority job would need to execute in a new stack and finish. Meanwhile, incoming jobs should not be added to temporary/recursion stacks, but to the main queue - which may be paused for recursion, which means any recursive call has the effect of pausing all current and new jobs. This tradeoff seems unacceptable.
+
 ## Balance the time given to swimlanes in the same pool.
 
 The idea here is that if one swimlane is a bad actor or otherwise hogging the execution slice time, the scheduler will know and skip it in future rounds until the other swimlanes in the same pool have received their share of the time.
@@ -444,3 +602,11 @@ The idea here is that if one swimlane is a bad actor or otherwise hogging the ex
 This proves quite difficult to do in a way that won't create further unintended side-effects. Handling empty swimlanes, swimlanes that receive new tasks, adding/removing swimlanes, and swimlanes with variable-length jobs from various sources becomes impossible to generalize.
 
 **Instead, the recommendation is to further stratify swimlanes by creating more and using different priorities.**
+
+```
+
+```
+
+```
+
+```

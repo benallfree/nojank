@@ -1,85 +1,75 @@
-import {
-  DEFAULT_SWIMLANE_NAME,
-  getPrioritizedLaneNames,
-  _globalConfig,
-} from './config'
-import { fifo, Fifo } from './fifo'
+import { DEFAULT_SWIMLANE_NAME, _globalConfig } from './config'
+import { Fifo } from './fifo'
+import { pools } from './init'
+import { Robin } from './robin'
 import { watchdog } from './watchdog'
 
-export type PushGeneratorCallback<TResult> = () => Generator<TResult>
-export type PushFunctionCallback<TResult> = () => TResult
-export type PushCallbackIn<TResult> =
-  | PushGeneratorCallback<TResult>
-  | PushFunctionCallback<TResult>
+export type RunGeneratorCallback<TResult> = () => Generator<TResult>
+export type RunFunctionCallback<TResult> = () => TResult
+export type RunCallbackIn<TResult> =
+  | RunGeneratorCallback<TResult>
+  | RunFunctionCallback<TResult>
 
-export type PushConfig = {
+export type RunConfig = {
   lane: string | typeof DEFAULT_SWIMLANE_NAME
 }
 
-type Node = {
+export type Job = {
+  laneName: string
   generator: Function
-  iterator?: Generator<any>
+  iterator: () => Generator<any>
   resolve: (res: any) => void
   reject: (error: any) => void
 }
 
-type Lane = {
-  queue: Fifo<Node>
-}
-const jobLanes: {
-  [laneName: string]: Lane
-} = {}
-
 const isGenerator = (
-  cb: PushCallbackIn<any>
-): cb is PushGeneratorCallback<any> => {
+  cb: RunCallbackIn<any>
+): cb is RunGeneratorCallback<any> => {
   return cb.prototype?.toString() === '[object Generator]'
+}
+
+export type LaneName = string
+type PoolId = number
+export type Pool = {
+  priority: PoolId
+  laneNames: Robin<LaneName>
+  addLane: (name: keyof Pool['laneNames']) => void
+  nextJob: () => Job | undefined
+}
+export type Lane = {
+  name: LaneName
+  priority: PoolId
+  jobs: Fifo<Job>
+  addJob: (job: Job) => void
 }
 
 let isWorking = false
 
-const jobExecutor = function* () {
-  while (true) {
-    const laneNames = getPrioritizedLaneNames()
-    if (laneNames.length === 0) break
-    for (let i = 0; i < laneNames.length; i++) {
-      const lane = jobLanes[laneNames[i]]
-      const nextJob = lane.queue.next()
-      if (!nextJob) {
-        continue
-      }
-      if (!nextJob.iterator) {
-        nextJob.iterator = nextJob.generator()
-      }
-      const { iterator, resolve, reject } = nextJob
-      const { sliceMs } = _globalConfig
-      try {
-        const { done, value } = watchdog(
-          () => iterator.next(),
-          `slice${sliceMs}`,
-          sliceMs
-        )
-        if (done) {
-          setImmediate(() => resolve(value))
-        }
-      } catch (error: any) {
-        setImmediate(() => reject(error))
-      }
-      yield
-    }
-    yield
-  }
-}
-
 const _work = () => {
   const { sliceMs } = _globalConfig
   const limit = Date.now() + sliceMs
-  const exec = jobExecutor()
+  const context = {
+    shouldYield: () => Date.now() >= limit,
+    expiry: limit,
+  }
   while (Date.now() < limit) {
-    const { done } = exec.next()
-    if (done) {
+    const job = pools.nextJob()
+    if (!job) {
       isWorking = false
       break
+    }
+    const { iterator, resolve, reject } = job
+    try {
+      const { done, value } = watchdog(
+        () => iterator().next(context),
+        `slice${sliceMs}:${name}`,
+        limit - Date.now()
+      )
+      if (done) {
+        setImmediate(() => resolve(value))
+      }
+    } catch (error: any) {
+      setImmediate(() => reject(error))
     }
   }
   if (isWorking) {
@@ -94,40 +84,29 @@ const work = () => {
 }
 
 export const run = <TResult>(
-  nibble: PushCallbackIn<TResult>,
-  config?: Partial<PushConfig>
+  nibble: RunCallbackIn<TResult>,
+  config?: Partial<RunConfig>
 ): Promise<TResult> => {
-  const _config: PushConfig = {
+  const _config: RunConfig = {
     lane: DEFAULT_SWIMLANE_NAME,
     ...config,
   }
 
-  const { lane: laneName } = _config
-  const { lanes } = _globalConfig
-  if (!lanes[laneName]) {
-    lanes[laneName] = {
-      priority: lanes[DEFAULT_SWIMLANE_NAME].priority,
-    }
-  }
-  if (!jobLanes[laneName]) {
-    jobLanes[laneName] = {
-      queue: fifo<Node>(),
-    }
-  }
-
-  const lane = jobLanes[laneName]
-  const generator: PushGeneratorCallback<TResult> = isGenerator(nibble)
+  const generator: RunGeneratorCallback<TResult> = isGenerator(nibble)
     ? nibble
     : function* () {
         return nibble()
       }
   const p = new Promise<TResult>((resolve, reject) => {
-    const newNode: Node = {
+    let _i: Generator
+    const newNode: Job = {
+      laneName: _config.lane,
       resolve,
       reject,
       generator,
+      iterator: () => _i || (_i = newNode.generator()),
     }
-    lane.queue.add(newNode)
+    pools.addJob(newNode)
   })
   work()
   return p

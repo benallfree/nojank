@@ -1,32 +1,38 @@
-export const fifo = <T>() => {
+export const fifo = <T>(): Fifo<T> => {
   type Node = {
     item: T
     next?: Node
   }
-  let root: Node
-  let tip: Node
+  let root: Node | undefined
+  let tip: Node | undefined
 
-  const add = (item: T) => {
-    const newNode: Node = {
-      item,
-    }
-    if (tip) {
-      tip.next = newNode
-    }
-    tip = newNode
-    if (!root) root = tip
+  const api: Fifo<T> = {
+    add: (item) => {
+      const newNode: Node = {
+        item,
+      }
+      if (tip) {
+        tip.next = newNode
+      }
+      tip = newNode
+      if (!root) root = tip
+    },
+    next: () => {
+      if (!root) return undefined
+      const ret = root.item
+      root = root.next
+      if (!root) tip = undefined
+      return ret
+    },
+    empty: () => !!root,
   }
 
-  const next = (): T => {
-    if (!root) return undefined
-    const ret = root.item
-    root = root.next
-    if (!root) tip = undefined
-    return ret
-  }
-
-  return { add, next }
+  return api
 }
 
 // FIXME ts 4.7 https://github.com/microsoft/TypeScript/pull/47607
-export type Fifo<T> = { add: (item: T) => void; next: () => T } //ReturnType<(typeof fifo)<T>>
+export type Fifo<T> = {
+  add: (item: T) => void
+  next: () => T | undefined
+  empty: () => boolean
+} //ReturnType<(typeof fifo)<T>>

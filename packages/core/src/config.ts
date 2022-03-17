@@ -1,15 +1,12 @@
 import { forEach, merge } from '@s-libs/micro-dash'
+import { PartialDeep } from 'type-fest'
 import { event } from './event'
+import { pools } from './init'
 
-export type Config = {
-  sliceMs: number
-  warnMs: number
-  lanes: {
-    [laneName: string]: {
-      priority: number
-    }
-  }
+type LaneConfig = {
+  priority: number
 }
+
 const MIN_SLICE_MS = 10
 const MAX_SLICE_MS = 500
 const MIN_WARN_MS = 10
@@ -22,6 +19,15 @@ export const LANE_MIN_PRIORITY = 0
 export const LANE_MAX_PRIORITY = 10000
 
 export const DEFAULT_SWIMLANE_NAME = '__default__'
+
+export type Config = {
+  sliceMs: number
+  warnMs: number
+  lanes: {
+    [DEFAULT_SWIMLANE_NAME]: LaneConfig
+    [laneName: string]: LaneConfig
+  }
+}
 
 export const DEFAULT_CONFIG: Config = {
   sliceMs: DEFAULT_SLICE_MS,
@@ -38,7 +44,7 @@ export let _globalConfig = { ...DEFAULT_CONFIG }
 const [onConfig, fireConfig] = event<Config>()
 export { onConfig }
 
-export const config = (c: Partial<Config>, reset = false) => {
+export const config = (c: PartialDeep<Config>, reset = false) => {
   const newConfig: Config = merge(
     {},
     DEFAULT_CONFIG,
@@ -65,6 +71,7 @@ export const config = (c: Partial<Config>, reset = false) => {
         `Priority for lane ${laneName} must be between ${LANE_MIN_PRIORITY} and ${LANE_MAX_PRIORITY}`
       )
     }
+    pools.ensureLane({ ...lane, name: laneName })
   })
 
   _globalConfig = newConfig
@@ -75,7 +82,8 @@ export const config = (c: Partial<Config>, reset = false) => {
 
 export const getPrioritizedLaneNames = () => {
   const { lanes } = _globalConfig
-  const _defaultPriority = lanes[DEFAULT_SWIMLANE_NAME].priority
+  const _defaultPriority =
+    lanes[DEFAULT_SWIMLANE_NAME].priority || DEFAULT_LANE_PRIORITY
   const laneNames = Object.getOwnPropertyNames(lanes).sort(
     (a, b) =>
       (lanes[b]?.priority || _defaultPriority) -
