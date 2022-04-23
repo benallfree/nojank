@@ -16,8 +16,10 @@ export const fifo = <T>(): Fifo<T> => {
       }
       tip = newNode
       if (!root) root = tip
+      console.log('added item', { item, root, tip })
     },
     next: () => {
+      console.log('text')
       if (!root) return undefined
       const ret = root.item
       root = root.next

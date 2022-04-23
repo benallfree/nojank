@@ -1,15 +1,30 @@
-import { DEFAULT_SWIMLANE_NAME, _globalConfig } from './config'
-import { fifo } from './fifo'
-import { robin } from './robin'
-import { Job, Lane, LaneName, Pool } from './run'
+import { robin, Robin } from '../robin'
+import { Job, RuntimeProvider } from './createRuntime'
+import { fifo, Fifo } from './fifo'
 
-export const createPoolManager = () => {
+export type LaneName = string
+export type PoolId = number
+export type Pool = {
+  priority: PoolId
+  laneNames: Robin<LaneName>
+  addLane: (name: keyof Pool['laneNames']) => void
+  nextJob: () => Job | undefined
+}
+export type Lane = {
+  name: LaneName
+  poolId: PoolId
+  jobs: Fifo<Job>
+  addJob: (job: Job) => void
+}
+
+export const createPoolManager = (provider: RuntimeProvider) => {
   const _pools: Pool[] = []
   const _lanesByName: {
     [laneName: string]: Lane
   } = {}
 
   const getOrCreatePool = (priority: number) => {
+    console.log(`getorCreatePool`, { priority })
     const _pool = _pools.find((e) => (e.priority = priority))
     if (_pool) return _pool
     {
@@ -43,7 +58,7 @@ export const createPoolManager = () => {
   }
 
   const moveLane = (lane: Lane, priority: number) => {
-    const _srcPool = getOrCreatePool(lane.priority)
+    const _srcPool = getOrCreatePool(lane.poolId)
     const _dstPool = getOrCreatePool(priority)
     _srcPool.laneNames.remove(lane.name)
     _dstPool.laneNames.add(lane.name)
@@ -52,12 +67,14 @@ export const createPoolManager = () => {
   const ensureLane = (request: { priority: number; name: string }) => {
     const { name, priority } = request
     const _lane = getOrCreateLane(name)
-    if (_lane.priority !== priority) {
+    getOrCreatePool(priority)
+    if (_lane.poolId !== priority) {
       moveLane(_lane, priority)
     }
   }
 
   const nextJob = () => {
+    console.log('nextJob', { _pools })
     for (let i = 0; i < _pools.length; i++) {
       const _pool = _pools[i]!
       const job = _pool.nextJob()
@@ -72,9 +89,7 @@ export const createPoolManager = () => {
     if (!_lanesByName[name]) {
       const _lane: Lane = {
         name,
-        priority:
-          _globalConfig.lanes[name]?.priority ||
-          _globalConfig.lanes[DEFAULT_SWIMLANE_NAME].priority,
+        poolId: provider.getPoolIdByLaneName(name),
         jobs: fifo<Job>(),
         addJob: (job: Job) => {
           _lane.jobs.add(job)
@@ -82,11 +97,14 @@ export const createPoolManager = () => {
       }
       _lanesByName[name] = _lane
     }
+    getOrCreatePool(_lanesByName[name]!.poolId)
     return _lanesByName[name]!
   }
 
   const addJob = (job: Job) => {
+    console.log('adding job', job)
     const lane = getOrCreateLane(job.laneName)
+    console.log('lane is', lane)
     lane.addJob(job)
   }
 
